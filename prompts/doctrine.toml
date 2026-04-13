@@ -1,0 +1,68 @@
+# DOCTRINE — canonical form
+#
+# This is the authoritative source for operational doctrine. The markdown
+# rendering in DOCTRINE.md is derived from this file for inclusion in the
+# agent's prompt. If the two disagree, this file wins.
+#
+# Edit this file to change how this instance of strange-loop operates.
+# Changes are hot-reloaded at the next context build.
+
+[repo]
+dev_branch = "agent"
+protected_branches = ["main", "master", "release/*"]
+require_tests_before_commit = true
+multi_model_review_line_threshold = 100
+
+[version]
+bump_updates = ["VERSION", "Cargo.toml", "CHANGELOG.md"]
+tag_format = "v{version}"
+tag_annotated = true
+
+[budget]
+total_usd = 100.0
+refuse_non_essential_below_pct = 10
+bg_pct = 10
+hard_task_pct = 50
+soft_task_pct = 30
+drift_check_every = 50
+drift_alert_pct = 50
+drift_alert_abs_usd = 5.0
+
+[owner]
+proactive_messages_per_hour = 3
+first_response_must_be_direct = true
+
+[proc]
+# argv allowlist — binaries the `proc` tool is permitted to invoke
+allowlist = [
+    "cargo", "rustc",
+    "pnpm", "npm", "node",
+    "python3",
+    "git", "ls", "cat", "grep", "rg", "fd",
+]
+# binaries explicitly refused even if added to allowlist by mistake
+deny = ["rm", "mv", "dd", "mkfs", "curl", "wget", "ssh", "scp"]
+# default network policy for Cell-class tools
+default_network = false
+
+[protected_paths]
+files = [
+    "prompts/CHARTER.md",
+    "prompts/CREED.md",
+]
+directories = [
+    "journal/",
+    ".git/",
+]
+
+[restart]
+max_per_hour = 5
+preflight_compile_check = true
+preflight_self_test = true
+preflight_charter_hash_check = true
+
+[consciousness]
+enabled = true
+default_wakeup_sec = 300
+max_rounds = 5
+pause_during_active_task = true
