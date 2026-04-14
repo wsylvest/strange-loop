@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/strange-loop",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["William Sylvester <wsylvest@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/wsylvest/strange-loop"
+readme = "README.md"
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal"] }
+
+# Errors and logging
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# Serde + time + ids
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Hashing for charter integrity
+sha2 = "0.10"
+hex = "0.4"
+
+# Cross-module primitives
+async-trait = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug = true
