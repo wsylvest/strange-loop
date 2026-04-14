@@ -1,0 +1,15 @@
+//! strange-loop core — runtime, config, and governance integrity.
+//!
+//! This crate is the glue between the store, the (future) LLM client,
+//! the (future) tool dispatcher, and the (future) adapters. In M0 it
+//! exposes only what the binary needs: config loading, logging setup,
+//! a `Runtime` that opens the store and records a session, and the
+//! charter-hash integrity check.
+
+pub mod config;
+pub mod governance;
+pub mod logging;
+pub mod runtime;
+
+pub use config::Config;
+pub use runtime::{Runtime, SessionId};
