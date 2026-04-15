@@ -2,8 +2,10 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/llm",
     "crates/store",
     "crates/strange-loop",
+    "crates/tools",
 ]
 
 [workspace.package]
@@ -44,6 +46,10 @@ hex = "0.4"
 
 # Cross-module primitives
 async-trait = "0.1"
+futures = "0.3"
+
+# HTTP for LLM providers
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 [profile.release]
 opt-level = 3
