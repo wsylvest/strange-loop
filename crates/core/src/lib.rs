@@ -8,11 +8,13 @@
 
 pub mod budget;
 pub mod config;
+pub mod context;
 pub mod governance;
 pub mod logging;
 pub mod runtime;
 pub mod tool_loop;
 
 pub use config::Config;
+pub use context::{build_context, BuiltContext, TaskKind};
 pub use runtime::{Runtime, SessionId};
 pub use tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, StopReason};
