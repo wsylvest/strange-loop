@@ -6,6 +6,7 @@
 //! a `Runtime` that opens the store and records a session, and the
 //! charter-hash integrity check.
 
+pub mod budget;
 pub mod config;
 pub mod governance;
 pub mod logging;

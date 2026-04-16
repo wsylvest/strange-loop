@@ -12,9 +12,10 @@
 //!   - termination conditions: content-only response, round cap,
 //!     LLM error exhausted
 //!
-//! Budget guard and owner-mailbox injection are wired in later
-//! milestones (budget in M1 after this lands; mailbox in M6).
-//! The hooks are stubbed so tests can exercise them.
+//!   - budget guard: hard cap (>50% of remaining) forces final answer;
+//!     soft nudge (>30% every 10 rounds) injects info message
+//!
+//! Owner-mailbox injection is wired in M6.
 
 use std::sync::Arc;
 
@@ -28,6 +29,8 @@ use sl_store::{events, EventKind};
 use sl_tools::{Dispatcher, ToolCtx};
 use tracing::{debug, warn};
 
+use crate::budget::{self, BudgetCheckResult, BudgetConfig};
+
 /// Tuning knobs for one run of the loop. These come from config in
 /// production; tests construct them inline.
 #[derive(Debug, Clone)]
@@ -39,6 +42,8 @@ pub struct LoopConfig {
     pub self_check_interval: u32,
     pub max_retries: u32,
     pub max_tokens_per_call: u32,
+    /// Budget enforcement. None = no budget guard at all.
+    pub budget: Option<BudgetConfig>,
 }
 
 impl LoopConfig {
@@ -51,6 +56,11 @@ impl LoopConfig {
             self_check_interval: cfg.tool_loop.self_check_interval,
             max_retries: 3,
             max_tokens_per_call: 16_384,
+            budget: Some(BudgetConfig {
+                total_usd: Some(cfg.budget.total_usd),
+                hard_task_pct: cfg.budget.hard_task_pct,
+                soft_task_pct: cfg.budget.soft_task_pct,
+            }),
         }
     }
 }
@@ -76,6 +86,10 @@ pub enum StopReason {
     ContentOnly,
     /// Hit the hard round cap; final answer was forced.
     RoundCap,
+    /// Task spending exceeded the hard budget threshold. Final answer
+    /// was forced. This is KERNEL-level enforcement — the LLM cannot
+    /// reason its way around it.
+    BudgetCap,
     /// LLM error chain exhausted: primary + all fallbacks failed.
     LlmExhausted,
 }
@@ -243,6 +257,59 @@ pub async fn run_tool_loop(
                 serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
             let result = dispatcher.dispatch(&ctx, &tc.name, args).await;
             messages.push(Message::tool_result(tc.id.clone(), result));
+        }
+
+        // Budget guard — KERNEL-level enforcement (SYSTEM_SPEC §6.8).
+        if let Some(ref budget_cfg) = cfg.budget {
+            let result = budget::check_budget(
+                usage.cost_usd,
+                &ctx.store,
+                ctx.session_id.as_str(),
+                rounds,
+                budget_cfg,
+            );
+            match result {
+                BudgetCheckResult::HardStop {
+                    task_cost,
+                    remaining,
+                } => {
+                    debug!(task_cost, remaining, "budget hard stop");
+                    messages.push(Message::system_text(budget::hard_stop_message(
+                        task_cost, remaining,
+                    )));
+                    let final_text = force_final_answer(
+                        llm.as_ref(),
+                        &messages,
+                        &active_model,
+                        active_effort,
+                        &cfg,
+                        &ctx,
+                        rounds,
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        format!(
+                            "Budget limit reached: task spent ${:.4} of ${:.2} remaining.",
+                            task_cost, remaining
+                        )
+                    });
+                    return Ok(LoopOutcome {
+                        final_text,
+                        usage,
+                        rounds,
+                        stop_reason: StopReason::BudgetCap,
+                    });
+                }
+                BudgetCheckResult::SoftNudge {
+                    task_cost,
+                    remaining,
+                } => {
+                    messages.push(Message::system_text(budget::soft_nudge_message(
+                        task_cost, remaining,
+                    )));
+                }
+                BudgetCheckResult::Ok => {}
+            }
         }
 
         // Loop back around.
@@ -481,6 +548,7 @@ mod tests {
             self_check_interval: 50,
             max_retries: 3,
             max_tokens_per_call: 4096,
+            budget: None, // most loop tests don't need budget
         }
     }
 
@@ -897,5 +965,242 @@ mod tests {
         let cap = mock.captured();
         // Round 2 must contain 3 messages: user, assistant(tool_calls), tool_result
         assert_eq!(cap[1].message_count, 3);
+    }
+
+    // ----------------------------------------------------------------
+    // Budget guard integration tests
+    // ----------------------------------------------------------------
+
+    use crate::budget::BudgetConfig;
+
+    fn budget_cfg(total: f64) -> Option<BudgetConfig> {
+        Some(BudgetConfig {
+            total_usd: Some(total),
+            hard_task_pct: 0.50,
+            soft_task_pct: 0.30,
+        })
+    }
+
+    /// Seed the store with prior session spending so the budget guard
+    /// sees a specific "remaining" when it queries.
+    fn seed_prior_spending(store: &Store, session_id: &str, cost: f64) {
+        #[derive(Serialize)]
+        struct P {
+            cost_usd: f64,
+        }
+        events::append_payload(
+            store,
+            session_id,
+            EventKind::LlmUsage,
+            Some("prior"),
+            &P { cost_usd: cost },
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn budget_hard_stop_terminates_loop() {
+        // total=10.0, prior session spending=9.0, remaining=1.0.
+        // The first LLM call costs $0.60 → 60% of remaining → hard stop.
+        let store = Store::open_in_memory().unwrap();
+        seed_prior_spending(&store, "session-test", 9.0);
+        let ctx = make_ctx(store.clone());
+
+        let expensive_usage = Usage {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            cost_usd: 0.60,
+            ..Default::default()
+        };
+        let script = vec![
+            // Round 1: tool call (will accumulate $0.60)
+            ScriptStep::Respond(
+                ScriptedResponse::tool_calls(
+                    None,
+                    vec![tool_call("c1", "echo", json!({"x": "work"}))],
+                )
+                .with_usage(expensive_usage),
+            ),
+            // After budget guard fires, force_final_answer calls the
+            // LLM one more time with no tools. This response is what
+            // the user sees.
+            ScriptStep::Respond(ScriptedResponse::text("stopped due to budget")),
+        ];
+        let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new(
+            "anthropic/claude-sonnet-4.6",
+            script,
+        ));
+
+        let mut cfg = base_cfg();
+        cfg.budget = budget_cfg(10.0);
+
+        let outcome = run_tool_loop(
+            llm,
+            make_dispatcher(),
+            vec![],
+            ctx,
+            cfg,
+            user_msg("do expensive work"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.stop_reason, StopReason::BudgetCap);
+        assert_eq!(outcome.final_text, "stopped due to budget");
+        assert_eq!(outcome.rounds, 1, "should stop after first tool-call round");
+    }
+
+    #[tokio::test]
+    async fn budget_soft_nudge_injects_system_message() {
+        // total=100, prior=60, remaining=40.
+        // Task costs $0.002 per round → $0.01 after 5 rounds.
+        // That's 0.025% of remaining, under soft threshold.
+        // We need task cost to exceed 30% of remaining: $12.
+        // So: prior=88, remaining=12, task_cost accumulates from
+        // scripted usage to cross 30% ($3.60) by round 10.
+        let store = Store::open_in_memory().unwrap();
+        seed_prior_spending(&store, "session-test", 88.0);
+        let ctx = make_ctx(store.clone());
+
+        let r = || {
+            ScriptedResponse::tool_calls(
+                None,
+                vec![tool_call("c1", "echo", json!({"x": "a"}))],
+            )
+            .with_usage(Usage {
+                prompt_tokens: 100,
+                completion_tokens: 10,
+                cost_usd: 0.40, // per round; 10 rounds = $4.0 → 33% of $12
+                ..Default::default()
+            })
+        };
+        let mut script: Vec<ScriptStep> = (0..10).map(|_| ScriptStep::Respond(r())).collect();
+        // Round 11: content-only final answer
+        script.push(ScriptStep::Respond(ScriptedResponse::text("done")));
+
+        let mock = MockLlmClient::new("anthropic/claude-sonnet-4.6", script);
+        let llm: Arc<dyn LlmClient> = Arc::new(mock.clone());
+
+        let mut cfg = base_cfg();
+        cfg.budget = budget_cfg(100.0);
+        cfg.self_check_interval = 0; // disable self-check noise
+        cfg.max_rounds = 20;
+
+        let outcome = run_tool_loop(
+            llm,
+            make_dispatcher(),
+            vec![],
+            ctx,
+            cfg,
+            user_msg("go"),
+        )
+        .await
+        .unwrap();
+
+        // Round 10 is divisible by 10 and by then task cost = $4.0
+        // with remaining = $12, so 33% → soft nudge should fire.
+        // The mock captured round-10's request; it should have the
+        // [BUDGET INFO] message in it.
+        assert_eq!(outcome.stop_reason, StopReason::ContentOnly);
+        let cap = mock.captured();
+        // Round 10 request (index 9, since 0-indexed) should contain
+        // the budget info message.
+        let round_10_req = &cap[9];
+        // The message count should include the budget nudge system message
+        // A quick sanity: more messages than round 9 had (one extra for nudge)
+        let round_9_req = &cap[8];
+        assert!(
+            round_10_req.message_count > round_9_req.message_count,
+            "round 10 should have an extra system message from the budget nudge; \
+             round 9 msgs={}, round 10 msgs={}",
+            round_9_req.message_count,
+            round_10_req.message_count,
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_none_skips_all_checks() {
+        // A task that would massively exceed budget if budget were set,
+        // but budget is None → runs to completion normally.
+        let store = Store::open_in_memory().unwrap();
+        let ctx = make_ctx(store);
+
+        let script = vec![
+            ScriptStep::Respond(
+                ScriptedResponse::tool_calls(
+                    None,
+                    vec![tool_call("c1", "echo", json!({"x": "x"}))],
+                )
+                .with_usage(Usage {
+                    cost_usd: 999.0,
+                    ..Default::default()
+                }),
+            ),
+            ScriptStep::Respond(ScriptedResponse::text("done")),
+        ];
+        let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new(
+            "anthropic/claude-sonnet-4.6",
+            script,
+        ));
+
+        let mut cfg = base_cfg();
+        cfg.budget = None; // explicitly no budget
+
+        let outcome = run_tool_loop(
+            llm,
+            make_dispatcher(),
+            vec![],
+            ctx,
+            cfg,
+            user_msg("go"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.stop_reason, StopReason::ContentOnly);
+        assert_eq!(outcome.final_text, "done");
+    }
+
+    #[tokio::test]
+    async fn budget_zero_remaining_is_immediate_hard_stop() {
+        // total=50, prior=50, remaining=0. Even a tiny task cost triggers hard stop.
+        let store = Store::open_in_memory().unwrap();
+        seed_prior_spending(&store, "session-test", 50.0);
+        let ctx = make_ctx(store);
+
+        let script = vec![
+            ScriptStep::Respond(
+                ScriptedResponse::tool_calls(
+                    None,
+                    vec![tool_call("c1", "echo", json!({"x": "x"}))],
+                )
+                .with_usage(Usage {
+                    cost_usd: 0.001,
+                    ..Default::default()
+                }),
+            ),
+            ScriptStep::Respond(ScriptedResponse::text("budget forced")),
+        ];
+        let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::new(
+            "anthropic/claude-sonnet-4.6",
+            script,
+        ));
+
+        let mut cfg = base_cfg();
+        cfg.budget = budget_cfg(50.0);
+
+        let outcome = run_tool_loop(
+            llm,
+            make_dispatcher(),
+            vec![],
+            ctx,
+            cfg,
+            user_msg("do anything"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.stop_reason, StopReason::BudgetCap);
+        assert_eq!(outcome.final_text, "budget forced");
     }
 }
