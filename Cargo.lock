@@ -1330,8 +1330,27 @@ name = "strange-loop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "rusqlite",
  "serde_json",
+ "strange-loop-adapter-cli",
+ "strange-loop-core",
+ "strange-loop-llm",
+ "strange-loop-store",
+ "strange-loop-tools",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "strange-loop-adapter-cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "rusqlite",
  "strange-loop-core",
  "strange-loop-store",
  "tokio",
@@ -1345,11 +1364,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "hex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "strange-loop-llm",
  "strange-loop-store",
+ "strange-loop-tools",
  "thiserror 1.0.69",
  "tokio",
  "toml",

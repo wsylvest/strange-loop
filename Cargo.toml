@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/adapter-cli",
     "crates/core",
     "crates/llm",
     "crates/store",
@@ -19,7 +20,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "signal"] }
 
 # Errors and logging
 anyhow = "1.0"

@@ -6,15 +6,23 @@
 //! a `Runtime` that opens the store and records a session, and the
 //! charter-hash integrity check.
 
+pub mod adapter;
 pub mod budget;
 pub mod config;
 pub mod context;
 pub mod governance;
 pub mod logging;
 pub mod runtime;
+pub mod scheduler;
+pub mod task;
+pub mod task_runner;
 pub mod tool_loop;
 
+pub use adapter::{Adapter, AgentMessage, AgentMessageKind, OwnerMessage};
 pub use config::Config;
 pub use context::{build_context, BuiltContext, TaskKind};
 pub use runtime::{Runtime, SessionId};
+pub use scheduler::Scheduler;
+pub use task::{Task, TaskState};
+pub use task_runner::{run_task, TaskDeps};
 pub use tool_loop::{run_tool_loop, LoopConfig, LoopOutcome, StopReason};
