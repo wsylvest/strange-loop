@@ -1,0 +1,22 @@
+[package]
+name = "strange-loop-adapter-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "sl_adapter_cli"
+path = "src/lib.rs"
+
+[dependencies]
+strange-loop-core = { path = "../core" }
+strange-loop-store = { path = "../store" }
+
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
