@@ -13,9 +13,14 @@ path = "src/main.rs"
 [dependencies]
 strange-loop-core = { path = "../core" }
 strange-loop-store = { path = "../store" }
+strange-loop-llm = { path = "../llm" }
+strange-loop-tools = { path = "../tools" }
+strange-loop-adapter-cli = { path = "../adapter-cli" }
 
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tokio.workspace = true
